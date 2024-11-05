@@ -7,12 +7,10 @@ import time
 import numpy as np
 import PIL.Image
 import torch
-from matplotlib import pyplot as plt
 from cog import BasePredictor, Input, Path, BaseModel
 
 from src.depth_pro import create_model_and_transforms, load_rgb
 from src.depth_pro.depth_pro import DepthProConfig
-
 
 MODEL_CACHE = "checkpoints"
 MODEL_URL = (
@@ -31,11 +29,8 @@ os.environ.update(
     }
 )
 
-
 class ModelOutput(BaseModel):
-    npz: Path
-    color_map: Path
-
+    depth_map: Path
 
 def download_weights(url, dest):
     start = time.time()
@@ -43,7 +38,6 @@ def download_weights(url, dest):
     print("downloading to: ", dest)
     subprocess.check_call(["pget", "-x", url, dest], close_fds=False)
     print("downloading took: ", time.time() - start)
-
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
@@ -86,25 +80,13 @@ class Predictor(BasePredictor):
             focallength_px = prediction["focallength_px"].detach().cpu().item()
             print(f"Estimated focal length: {focallength_px}")
 
-        inverse_depth = 1 / depth
-        # Visualize inverse depth instead of depth, clipped to [0.1m;250m] range for better visualization.
-        max_invdepth_vizu = min(inverse_depth.max(), 1 / 0.1)
-        min_invdepth_vizu = max(1 / 250, inverse_depth.min())
-        inverse_depth_normalized = (inverse_depth - min_invdepth_vizu) / (
-            max_invdepth_vizu - min_invdepth_vizu
-        )
+        # Normalize depth for 16-bit range
+        max_depth = depth.max()
+        min_depth = depth.min()
+        normalized_depth = (65535 * (depth - min_depth) / (max_depth - min_depth)).astype(np.uint16)
 
-        # Save Depth as npz file.
-        out_npz = "/tmp/out.npz"
-        np.savez_compressed(out_npz, depth=depth)
-        np.savez_compressed("out.npz", depth=depth)
+        # Save depth as 16-bit grayscale PNG
+        out_depth_map = "/tmp/depth_map.png"
+        PIL.Image.fromarray(normalized_depth).save(out_depth_map, format="PNG")
 
-        # Save as color-mapped "turbo" jpg image.
-        cmap = plt.get_cmap("turbo")
-        color_depth = (cmap(inverse_depth_normalized)[..., :3] * 255).astype(np.uint8)
-        out_color_map = "/tmp/out.jpg"
-        PIL.Image.fromarray(color_depth).save(out_color_map, format="JPEG", quality=90)
-
-        PIL.Image.fromarray(color_depth).save("out.jpg", format="JPEG", quality=90)
-
-        return ModelOutput(npz=Path(out_npz), color_map=Path(out_color_map))
+        return ModelOutput(depth_map=Path(out_depth_map))
